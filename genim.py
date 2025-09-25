@@ -27,6 +27,9 @@ from torch.optim import Adam, SGD
 from torch.utils.data.dataset import Dataset
 from torch.autograd import Variable
 
+import os
+from datetime import datetime
+
 print('Is GPU available? {}\n'.format(torch.cuda.is_available()))
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CUDA_LAUNCH_BLOCKING=1
@@ -113,12 +116,36 @@ adj = adj.to(device)
 forward_model = forward_model.to(device)
 forward_model.train()
 
+def save_checkpoint(save_dir, tag, vae_model, forward_model, optimizer, epoch, args, extra=None):
+    os.makedirs(save_dir, exist_ok=True)
+    ckpt = {
+        "epoch": epoch,
+        "args": vars(args),
+        "vae_state_dict": vae_model.state_dict(),
+        "forward_state_dict": forward_model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "extra": extra or {},
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path = os.path.join(save_dir, f"checkpoint_{tag}.pt")
+    torch.save(ckpt, path)
+    print(f"[✓] Saved checkpoint to: {path}")
+    return path
+
+
 def loss_all(x, x_hat, y, y_hat):
     reproduction_loss = F.binary_cross_entropy(x_hat, x, reduction='sum')
     forward_loss = F.mse_loss(y_hat, y, reduction='sum')
     # forward_loss = F.binary_cross_entropy(y_hat, y, reduction='sum')
     return reproduction_loss+forward_loss, reproduction_loss, forward_loss
 
+save_dir = f"checkpoints/{args.dataset}_{args.diffusion_model}_seed{args.seed_rate}"
+os.makedirs(save_dir, exist_ok=True)
+
+best_ckpt_path = os.path.join(save_dir, "best.pt")
+final_ckpt_path = os.path.join(save_dir, "final.pt")
+
+best_total = float("inf")
 # default 600
 for epoch in range(10):
     begin = time.time()
@@ -174,7 +201,38 @@ for epoch in range(10):
           "\tReconstruction Recall: {:.4f}".format(recall_re / len(train_set)),
           "\tTime: {:.4f}".format(end - begin)
          )
+    avg_total = total_overall / len(train_set)
 
+    # Save best checkpoint (overwrite)
+    if avg_total < best_total:
+        best_total = avg_total
+        torch.save(
+            {
+                "epoch": epoch + 1,
+                "vae_state_dict": vae_model.state_dict(),
+                "forward_state_dict": forward_model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_loss": best_total,
+                "args": vars(args),
+            },
+            best_ckpt_path,
+        )
+        print(f"[✓] Best checkpoint saved at epoch {epoch+1} -> {best_ckpt_path}")
+
+torch.save(
+    {
+        "epoch": epoch + 1,
+        "vae_state_dict": vae_model.state_dict(),
+        "forward_state_dict": forward_model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "final_loss": avg_total,
+        "args": vars(args),
+    },
+    final_ckpt_path,
+)
+
+print(f"[✓] Final checkpoint saved -> {final_ckpt_path}")
+exit()
 for param in vae_model.parameters():
     param.requires_grad = False
 
